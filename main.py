@@ -1,12 +1,14 @@
-import fastapi
+from fastapi import FastAPI
 import aiohttp
 import asyncio
 import time
 from config import settings
+import uvicorn
+import ssl
+import certifi
 
-binance_exchange_name = "BINANCE"
-coinbase_exchange_name = "COINBASE"
-kraken_exchange_name = "KRAKEN"
+app = FastAPI(title="Crypto Price Aggregator")
+
 
 
 async def fetch_price_from_exchange(session, exchange_name, url):
@@ -45,31 +47,65 @@ async def fetch_price_from_exchange(session, exchange_name, url):
 
 
 async def fetch_all_prices():
-    """
-    Получает цены Bitcoin со всех бирж ПАРАЛЛЕЛЬНО.
-
-    Возвращает:
-        dict: {
-            "prices": [
-                {"exchange": "binance", "price": 67234.56},
-                {"exchange": "coinbase", "price": 67123.45},
-                {"exchange": "kraken", "price": 67345.67}
-            ],
-            "execution_time": 1.23
-        }
-    """
-    # 1. Замеряем время начала
+    """Получает цены Bitcoin со всех бирж ПАРАЛЛЕЛЬНО."""
     start_time = time.time()
-    # 2. Создаём aiohttp.ClientSession()
-    async with aiohttp.ClientSession() as session:
-        # 3. Создаём список задач (по одной на биржу)
-        birge = [binance_exchange_name,
-                coinbase_exchange_name, kraken_exchange_name]
+    
+    # Используем сертификаты из certifi (как в requests)
+    ssl_context = ssl.create_default_context(cafile=certifi.where())
+    connector = aiohttp.TCPConnector(ssl=ssl_context)
+    
+    async with aiohttp.ClientSession(connector=connector) as session:
+        exchanges = ["BINANCE", "COINBASE", "KRAKEN"]
+        urls = [str(settings.BINANCE_URL), str(settings.COINBASE_URL), str(settings.KRAKEN_URL)]
+        
         tasks = []
-        for bitkoin in birge:
-            task = fetch_price_from_exchange(session, bitkoin, url)
+        for exchange, url in zip(exchanges, urls):
+            task = fetch_price_from_exchange(session, exchange, url)
+            tasks.append(task)
+        
+        results = await asyncio.gather(*tasks)
+        valid_results = [r for r in results if r is not None]
+        execution_time = time.time() - start_time
+        
+        return {
+            "prices": valid_results,
+            "execution_time": round(execution_time, 2)
+        }
 
-    # 4. Запускаем через asyncio.gather(*tasks)
-    # 5. Фильтруем None (если какая-то биржа упала)
-    # 6. Замеряем время выполнения
-    # 7. Возвращаем результат
+@app.get("/")
+async def root():
+    return {
+        "message": "Crypto Price Aggregator API",
+        "endpoints": {
+            "/prices": "Получить цены Bitcoin со всех бирж",
+            "/health": "Проверка работоспособности"
+        }
+    }
+
+@app.get("/prices")
+async def get_prices():
+    """
+    Получает цены Bitcoin со всех бирж параллельно.
+    """
+    # 1. Вызываем fetch_all_prices()
+    result = await fetch_all_prices()
+    # 2. Возвращаем результат
+    return result
+
+@app.get("/health")
+async def health_check():
+    """Проверка работоспособности API."""
+    return {"status": "ok"}
+
+@app.get("/prices/{exchange}")
+async def get_price_by_exchange(exchange: str):
+    """Получить цену Bitcoin с конкретной биржи."""
+    # exchange может быть "binance", "coinbase", "kraken"
+
+@app.get("/convert")
+async def convert_currency(amount: float, from_currency: str, to_currency: str):
+    """Конвертировать валюту."""
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+
